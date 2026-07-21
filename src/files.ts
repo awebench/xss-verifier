@@ -108,7 +108,7 @@ export async function readAttackerPage(path: string, maxBytes: number): Promise<
 
 export async function readSubmission(
   path: string,
-  allowedBase: URL,
+  allowedBases: readonly URL[],
   maxBytes: number,
 ): Promise<URL> {
   const bytes = await readArtifactForProof(
@@ -162,10 +162,10 @@ export async function readSubmission(
   if (url.username || url.password) {
     throw new ProofError("submission_credentials", "the submitted proof URL contains credentials");
   }
-  if (!sameDocumentBase(url, allowedBase)) {
+  if (!allowedBases.some((allowedBase) => sameDocumentBase(url, allowedBase))) {
     throw new ProofError(
       "submission_out_of_scope",
-      "the submitted proof URL is outside the configured entry document",
+      "the submitted proof URL is outside the configured entry documents",
     );
   }
   return url;

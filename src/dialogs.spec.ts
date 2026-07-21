@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import { dialogMatches } from "./dialogs.js";
-import type { DialogEvidence, NavigationConfig } from "./types.js";
+import type { DialogEvidence, VerifierConfig } from "./types.js";
 
-const config: NavigationConfig = {
-  kind: "navigation",
+const config: VerifierConfig = {
   submissionPath: "/work/finding.txt",
   victim: {
     path: "/work/victim.html",
     url: new URL("http://127.0.0.1:4174/victim.html"),
     sha256: "a".repeat(64),
+  },
+  attacker: {
+    path: "/work/attacker.html",
+    url: new URL("http://127.0.0.1:4175/attacker.html"),
   },
   expectation: { dialogType: "alert", message: "proof", frameScope: "top" },
   browser: { executablePath: "/browser", expectedVersion: "1", sandbox: "enabled" },
@@ -53,7 +56,7 @@ describe("dialog attribution", () => {
   });
 
   it("allows a victim iframe only when configured", () => {
-    const anyFrameConfig: NavigationConfig = {
+    const anyFrameConfig: VerifierConfig = {
       ...config,
       expectation: { ...config.expectation, frameScope: "any" },
     };

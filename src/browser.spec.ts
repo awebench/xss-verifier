@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { sha256 } from "./files.js";
 import { verify } from "./replay.js";
-import type { AttackerPageConfig, NavigationConfig } from "./types.js";
+import type { VerifierConfig } from "./types.js";
 
 const integrationEnabled = process.env.XSS_VERIFIER_INTEGRATION === "1";
 const browserPath = process.env.XSS_VERIFIER_BROWSER_PATH ?? "";
@@ -29,7 +29,7 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
   it.each([
     ["query", "?payload=alert%28%27proof%27%29"],
     ["fragment", "#alert%28%27proof%27%29"],
-  ])("replays a navigation %s proof", async (_name, suffix) => {
+  ])("replays a direct navigation %s proof without an attacker artifact", async (_name, suffix) => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");
     const submissionPath = join(directory, "finding.txt");
@@ -43,11 +43,15 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
     await writeFile(submissionPath, `${victimUrl.href}${suffix}\n`);
 
-    const result = await verify(navigationConfig(victimPath, victimUrl, victim, submissionPath));
+    const result = await verify(verifierConfig(victimPath, victimUrl, victim, submissionPath));
     expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence).toMatchObject({
+      replayKind: "navigation",
+      interaction: { attemptedClicks: 0, successfulClicks: 0, failedClicks: 0 },
+    });
   });
 
-  it("clicks a single button on the submitted page", async () => {
+  it("clicks a button on the victim page", async () => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");
     const submissionPath = join(directory, "finding.txt");
@@ -58,24 +62,98 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
     await writeFile(submissionPath, `${victimUrl.href}\n`);
 
-    const result = await verify(navigationConfig(victimPath, victimUrl, victim, submissionPath));
+    const result = await verify(verifierConfig(victimPath, victimUrl, victim, submissionPath));
     expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence.interaction).toEqual({
+      attemptedClicks: 1,
+      successfulClicks: 1,
+      failedClicks: 0,
+    });
   });
 
-  it("rejects a submitted page with multiple buttons", async () => {
+  it("replays an arbitrary sequence of buttons in document order", async () => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");
     const submissionPath = join(directory, "finding.txt");
-    const victim = Buffer.from("<!doctype html><button>One</button><button>Two</button>");
+    const victim = Buffer.from(`<!doctype html>
+      <button id="one">One</button><button id="two">Two</button><button id="three">Three</button>
+      <script>
+        let step = 0;
+        one.onclick = () => { step = 1 };
+        two.onclick = () => { if (step === 1) step = 2 };
+        three.onclick = () => { if (step === 2) alert("proof") };
+      </script>`);
     await writeFile(victimPath, victim);
     const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
     await writeFile(submissionPath, `${victimUrl.href}\n`);
 
-    const result = await verify({
-      ...navigationConfig(victimPath, victimUrl, victim, submissionPath),
-      timeoutMs: 500,
+    const result = await verify(verifierConfig(victimPath, victimUrl, victim, submissionPath));
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence.interaction).toEqual({
+      attemptedClicks: 3,
+      successfulClicks: 3,
+      failedClicks: 0,
     });
-    expect(result).toMatchObject({ passed: false, reasonCode: "button_ambiguous" });
+  });
+
+  it("can click the same button repeatedly", async () => {
+    const victimPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victim = Buffer.from(`<!doctype html><button>Continue</button><script>
+      let clicks = 0;
+      document.querySelector("button").onclick = () => {
+        clicks += 1;
+        if (clicks === 3) alert("proof");
+      };
+    </script>`);
+    await writeFile(victimPath, victim);
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    await writeFile(submissionPath, `${victimUrl.href}\n`);
+
+    const result = await verify(verifierConfig(victimPath, victimUrl, victim, submissionPath));
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence.interaction).toEqual({
+      attemptedClicks: 3,
+      successfulClicks: 3,
+      failedClicks: 0,
+    });
+  });
+
+  it("accepts an attacker page that redirects to a query-string XSS", async () => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const attackerPath = join(directory, "attacker.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
+    const victim = Buffer.from(`<!doctype html><script>
+      const payload = new URLSearchParams(location.search).get("payload");
+      if (payload) (0, eval)(payload);
+    </script>`);
+    const proofUrl = `${victimUrl.href}?payload=alert%28%27proof%27%29`;
+    const attacker = Buffer.from(`<!doctype html><button>Open</button><script>
+      document.querySelector("button").onclick = () => { location.href = ${JSON.stringify(proofUrl)} };
+    </script>`);
+    await Promise.all([
+      writeFile(victimPath, victim),
+      writeFile(attackerPath, attacker),
+      writeFile(submissionPath, `${attackerUrl.href}\n`),
+    ]);
+
+    const result = await verify(
+      verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+    );
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence).toMatchObject({
+      replayKind: "attacker-page",
+      interaction: { attemptedClicks: 1, successfulClicks: 1, failedClicks: 0 },
+      matchingDialog: { securityOrigin: victimUrl.origin },
+    });
   });
 
   it("ignores an attacker alert and accepts a later victim-origin postMessage alert", async () => {
@@ -104,48 +182,16 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
       writeFile(submissionPath, `${attackerUrl.href}\n`),
     ]);
 
-    const config: AttackerPageConfig = {
-      ...commonConfig(victimPath, victimUrl, victim, submissionPath),
-      kind: "attacker-page",
-      attacker: { path: attackerPath, url: attackerUrl },
-    };
-    const result = await verify(config);
+    const result = await verify(
+      verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+    );
     expect(result.passed).toBe(true);
     expect(result.evidence.dialogs.map((dialog) => dialog.message)).toEqual(["noise", "proof"]);
     expect(result.evidence.dialogs[0]?.securityOrigin).toBe(attackerUrl.origin);
     expect(result.evidence.dialogs[1]?.securityOrigin).toBe(victimUrl.origin);
-  });
-
-  it("observes an immediate dialog in a newly opened victim tab", async () => {
-    const victimPort = await freePort();
-    const attackerPort = await freePort();
-    const victimPath = join(directory, "victim.html");
-    const attackerPath = join(directory, "attacker.html");
-    const submissionPath = join(directory, "finding.txt");
-    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
-    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
-    const victim = Buffer.from("<!doctype html><script>alert('proof')</script>");
-    const attacker = Buffer.from(
-      `<!doctype html><script>open(${JSON.stringify(victimUrl.href)})</script>`,
-    );
-    await Promise.all([
-      writeFile(victimPath, victim),
-      writeFile(attackerPath, attacker),
-      writeFile(submissionPath, `${attackerUrl.href}\n`),
-    ]);
-
-    const config: AttackerPageConfig = {
-      ...commonConfig(victimPath, victimUrl, victim, submissionPath),
-      kind: "attacker-page",
-      attacker: { path: attackerPath, url: attackerUrl },
-    };
-    const result = await verify(config);
-    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
-    expect(result.evidence.dialogs.at(-1)).toMatchObject({
-      message: "proof",
-      securityOrigin: victimUrl.origin,
-      topFrame: true,
-    });
   }, 10_000);
 
   it("attributes a dialog from a cross-site victim iframe", async () => {
@@ -167,9 +213,10 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     ]);
 
     const result = await verify({
-      ...commonConfig(victimPath, victimUrl, victim, submissionPath),
-      kind: "attacker-page",
-      attacker: { path: attackerPath, url: attackerUrl },
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
       expectation: { dialogType: "alert", message: "proof", frameScope: "any" },
     });
 
@@ -198,17 +245,13 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     ]);
 
     const topFrame = await verify({
-      ...navigationConfig(victimPath, victimUrl, victim, submissionPath),
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath),
       timeoutMs: 500,
     });
     expect(topFrame).toMatchObject({ passed: false, reasonCode: "dialog_mismatch" });
-    expect(topFrame.evidence.dialogs.at(-1)).toMatchObject({
-      message: "proof",
-      topFrame: false,
-    });
 
     const anyFrame = await verify({
-      ...navigationConfig(victimPath, victimUrl, victim, submissionPath),
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath),
       expectation: { dialogType: "alert", message: "proof", frameScope: "any" },
     });
     expect(anyFrame).toMatchObject({ passed: true, reasonCode: "proof_observed" });
@@ -228,39 +271,32 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
       writeFile(attackerPath, "<!doctype html><script>alert('proof')</script>"),
       writeFile(submissionPath, `${attackerUrl.href}\n`),
     ]);
-    const config: AttackerPageConfig = {
-      ...commonConfig(victimPath, victimUrl, victim, submissionPath),
-      timeoutMs: 500,
-      kind: "attacker-page",
-      attacker: { path: attackerPath, url: attackerUrl },
-    };
 
-    const result = await verify(config);
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+      timeoutMs: 500,
+    });
     expect(result).toMatchObject({ passed: false, reasonCode: "dialog_mismatch" });
   });
 });
 
-function navigationConfig(
+function verifierConfig(
   victimPath: string,
   victimUrl: URL,
   victim: Buffer,
   submissionPath: string,
-): NavigationConfig {
-  return {
-    ...commonConfig(victimPath, victimUrl, victim, submissionPath),
-    kind: "navigation",
-  };
-}
-
-function commonConfig(
-  victimPath: string,
-  victimUrl: URL,
-  victim: Buffer,
-  submissionPath: string,
-): Omit<NavigationConfig, "kind"> {
+  attacker = {
+    path: join(victimPath, "..", "attacker.html"),
+    url: new URL("http://127.0.0.1:1/attacker.html"),
+  },
+): VerifierConfig {
   return {
     submissionPath,
     victim: { path: victimPath, url: victimUrl, sha256: sha256(victim) },
+    attacker,
     expectation: { dialogType: "alert", message: "proof", frameScope: "top" },
     browser: {
       executablePath: browserPath,

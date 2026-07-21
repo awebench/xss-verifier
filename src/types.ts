@@ -21,8 +21,6 @@ const proofFailureCodes = [
   "submission_out_of_scope",
   "victim_missing",
   "victim_modified",
-  "button_ambiguous",
-  "button_click_failed",
   "dialog_mismatch",
   "navigation_failed",
   "dialog_timeout",
@@ -48,9 +46,10 @@ interface EvidenceLimits {
   characters: number;
 }
 
-interface CommonVerifierConfig {
+export interface VerifierConfig {
   submissionPath: string;
   victim: ResourceConfig & { sha256: string };
+  attacker: ResourceConfig;
   expectation: DialogExpectation;
   browser: {
     executablePath: string;
@@ -60,17 +59,6 @@ interface CommonVerifierConfig {
   timeoutMs: number;
   limits: EvidenceLimits;
 }
-
-export interface NavigationConfig extends CommonVerifierConfig {
-  kind: "navigation";
-}
-
-export interface AttackerPageConfig extends CommonVerifierConfig {
-  kind: "attacker-page";
-  attacker: ResourceConfig;
-}
-
-export type VerifierConfig = NavigationConfig | AttackerPageConfig;
 
 export type Invocation =
   | { kind: "json"; config: VerifierConfig }
@@ -88,7 +76,8 @@ export interface DialogEvidence {
 }
 
 export interface VerificationEvidence {
-  replayKind: ReplayKind;
+  replayKind: ReplayKind | null;
+  interaction: InteractionEvidence;
   submittedUrl: string;
   browserVersion: string;
   dialogs: readonly DialogEvidence[];
@@ -97,6 +86,12 @@ export interface VerificationEvidence {
   finalUrls: readonly string[];
   pageLimitReached: boolean;
   navigationError: string | null;
+}
+
+export interface InteractionEvidence {
+  attemptedClicks: number;
+  successfulClicks: number;
+  failedClicks: number;
 }
 
 interface VerificationResultBase {

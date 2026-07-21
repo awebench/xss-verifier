@@ -5,11 +5,12 @@ import { ConfigError } from "./errors.js";
 import type { Invocation } from "./types.js";
 
 const baseEnvironment: NodeJS.ProcessEnv = {
-  XSS_VERIFIER_REPLAY_KIND: "navigation",
   XSS_VERIFIER_SUBMISSION_PATH: "/work/finding.txt",
   XSS_VERIFIER_VICTIM_PATH: "/work/victim.html",
   XSS_VERIFIER_VICTIM_URL: "http://127.0.0.1:4174/victim.html",
   XSS_VERIFIER_VICTIM_SHA256: "a".repeat(64),
+  XSS_VERIFIER_ATTACKER_PATH: "/work/attacker.html",
+  XSS_VERIFIER_ATTACKER_URL: "http://127.0.0.1:4173/attacker.html",
   XSS_VERIFIER_DIALOG_TYPE: "alert",
   XSS_VERIFIER_DIALOG_MESSAGE: "proof",
   XSS_VERIFIER_FRAME_SCOPE: "top",
@@ -19,14 +20,14 @@ const baseEnvironment: NodeJS.ProcessEnv = {
 };
 
 describe("configuration", () => {
-  it("builds a typed navigation configuration", () => {
+  it("builds a verifier configuration with victim and optional attacker entries", () => {
     const invocation = parseRun([], baseEnvironment);
 
     expect(invocation).toMatchObject({
       kind: "json",
       config: {
-        kind: "navigation",
         submissionPath: "/work/finding.txt",
+        attacker: { path: "/work/attacker.html" },
         expectation: { dialogType: "alert", message: "proof", frameScope: "top" },
         browser: { sandbox: "enabled" },
         timeoutMs: 5000,
@@ -36,21 +37,9 @@ describe("configuration", () => {
   });
 
   it("requires attacker-page fields and separate loopback origins", () => {
-    const attackerEnvironment = {
-      ...baseEnvironment,
-      XSS_VERIFIER_REPLAY_KIND: "attacker-page",
-      XSS_VERIFIER_ATTACKER_PATH: "/work/attacker.html",
-      XSS_VERIFIER_ATTACKER_URL: "http://127.0.0.1:4173/attacker.html",
-    };
-    const invocation = parseRun([], attackerEnvironment);
-    expect(invocation.config).toMatchObject({
-      kind: "attacker-page",
-      attacker: { path: "/work/attacker.html" },
-    });
-
     expect(() =>
       parseInvocation([], {
-        ...attackerEnvironment,
+        ...baseEnvironment,
         XSS_VERIFIER_ATTACKER_URL: "http://127.0.0.1:4174/attacker.html",
       }),
     ).toThrowError(/distinct origins/u);
@@ -67,6 +56,11 @@ describe("configuration", () => {
     ["remote victim", { XSS_VERIFIER_VICTIM_URL: "https://example.com/victim" }, /loopback http/u],
     ["bad timeout", { XSS_VERIFIER_TIMEOUT_MS: "0" }, /between 100 and 30000/u],
     ["bad frame scope", { XSS_VERIFIER_FRAME_SCOPE: "parent" }, /Invalid option/u],
+    [
+      "missing attacker path",
+      { XSS_VERIFIER_ATTACKER_PATH: undefined },
+      /ATTACKER_PATH is required/u,
+    ],
   ])("rejects %s", (_name, replacements, pattern) => {
     const environment = { ...baseEnvironment, ...replacements };
     expect(() => parseInvocation([], environment)).toThrowError(pattern);

@@ -25,7 +25,7 @@ describe("artifact and submission validation", () => {
 
   it("accepts one absolute scoped URL with query and fragment payload space", async () => {
     await writeFile(submissionPath, `${victimUrl.href}?name=%3Csvg%3E#payload\n`);
-    const result = await readSubmission(submissionPath, victimUrl, 4096);
+    const result = await readSubmission(submissionPath, [victimUrl], 4096);
     expect(result.search).toBe("?name=%3Csvg%3E");
     expect(result.hash).toBe("#payload");
   });
@@ -39,14 +39,14 @@ describe("artifact and submission validation", () => {
     ["http://127.0.0.1:4174/other.html\n", "submission_out_of_scope"],
   ])("rejects unsafe submission %j", async (value, reasonCode) => {
     await writeFile(submissionPath, value);
-    await expect(readSubmission(submissionPath, victimUrl, 4096)).rejects.toMatchObject({
+    await expect(readSubmission(submissionPath, [victimUrl], 4096)).rejects.toMatchObject({
       reasonCode,
     });
   });
 
   it("rejects invalid UTF-8 and symlinks", async () => {
     await writeFile(submissionPath, Buffer.from([0xff]));
-    await expect(readSubmission(submissionPath, victimUrl, 4096)).rejects.toMatchObject({
+    await expect(readSubmission(submissionPath, [victimUrl], 4096)).rejects.toMatchObject({
       reasonCode: "submission_invalid_utf8",
     });
 
@@ -54,7 +54,7 @@ describe("artifact and submission validation", () => {
     await writeFile(target, `${victimUrl.href}\n`);
     await rm(submissionPath);
     await symlink(target, submissionPath);
-    await expect(readSubmission(submissionPath, victimUrl, 4096)).rejects.toMatchObject({
+    await expect(readSubmission(submissionPath, [victimUrl], 4096)).rejects.toMatchObject({
       reasonCode: "unsafe_artifact",
     });
   });

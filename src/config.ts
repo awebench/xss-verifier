@@ -44,14 +44,6 @@ const optionDefinitions = {
     description: "Harbor artifact directory",
     schema: z.string().min(1).optional(),
   }),
-  replayKind: defineOption({
-    cli: "replay-kind",
-    environment: "XSS_VERIFIER_REPLAY_KIND",
-    valueName: "navigation|attacker-page",
-    description: "Replay strategy",
-    required: true,
-    schema: z.enum(["navigation", "attacker-page"]),
-  }),
   submissionPath: defineOption({
     cli: "submission-path",
     environment: "XSS_VERIFIER_SUBMISSION_PATH",
@@ -88,15 +80,17 @@ const optionDefinitions = {
     cli: "attacker-path",
     environment: "XSS_VERIFIER_ATTACKER_PATH",
     valueName: "PATH",
-    description: "Attacker HTML artifact for attacker-page replay",
-    schema: z.string().min(1).optional(),
+    description: "Optional submitted attacker HTML artifact",
+    required: true,
+    schema: z.string().min(1),
   }),
   attackerUrl: defineOption({
     cli: "attacker-url",
     environment: "XSS_VERIFIER_ATTACKER_URL",
     valueName: "URL",
-    description: "Loopback HTTP URL for the attacker page",
-    schema: z.string().min(1).optional(),
+    description: "Loopback HTTP URL for an attacker page",
+    required: true,
+    schema: z.string().min(1),
   }),
   dialogType: defineOption({
     cli: "dialog-type",
@@ -293,17 +287,28 @@ export function parseVerifierConfig(
   parsed: ParsedArguments,
   environment: NodeJS.ProcessEnv = process.env,
 ): VerifierConfig {
-  const replayKind = parseOption("replayKind", parsed, environment);
   const victimUrl = parseConfiguredUrl(
     parseOption("victimUrl", parsed, environment),
     "XSS_VERIFIER_VICTIM_URL",
   );
-  const common = {
+  const attackerUrl = parseConfiguredUrl(
+    parseOption("attackerUrl", parsed, environment),
+    "XSS_VERIFIER_ATTACKER_URL",
+  );
+  if (attackerUrl.origin === victimUrl.origin) {
+    throw new ConfigError("attacker and victim must use distinct origins");
+  }
+
+  return {
     submissionPath: parseOption("submissionPath", parsed, environment),
     victim: {
       path: parseOption("victimPath", parsed, environment),
       url: victimUrl,
       sha256: parseOption("victimSha256", parsed, environment),
+    },
+    attacker: {
+      path: parseOption("attackerPath", parsed, environment),
+      url: attackerUrl,
     },
     expectation: {
       dialogType: parseOption("dialogType", parsed, environment),
@@ -323,28 +328,6 @@ export function parseVerifierConfig(
       pages: parseOption("pages", parsed, environment),
       characters: parseOption("evidenceCharacters", parsed, environment),
     },
-  };
-
-  if (replayKind === "navigation") {
-    return { ...common, kind: "navigation" };
-  }
-
-  const attackerPath = parseOption("attackerPath", parsed, environment);
-  const attackerUrlValue = parseOption("attackerUrl", parsed, environment);
-  if (attackerPath === undefined) {
-    throw new ConfigError("XSS_VERIFIER_ATTACKER_PATH is required for attacker-page replay");
-  }
-  if (attackerUrlValue === undefined) {
-    throw new ConfigError("XSS_VERIFIER_ATTACKER_URL is required for attacker-page replay");
-  }
-  const attackerUrl = parseConfiguredUrl(attackerUrlValue, "XSS_VERIFIER_ATTACKER_URL");
-  if (attackerUrl.origin === victimUrl.origin) {
-    throw new ConfigError("attacker and victim must use distinct origins");
-  }
-  return {
-    ...common,
-    kind: "attacker-page",
-    attacker: { path: attackerPath, url: attackerUrl },
   };
 }
 

@@ -69,11 +69,12 @@ describe("CLI application", () => {
         {
           XSS_VERIFIER_ADAPTER: "harbor",
           XSS_VERIFIER_OUTPUT_DIRECTORY: directory,
-          XSS_VERIFIER_REPLAY_KIND: "navigation",
           XSS_VERIFIER_SUBMISSION_PATH: submissionPath,
           XSS_VERIFIER_VICTIM_PATH: victimPath,
           XSS_VERIFIER_VICTIM_URL: "http://127.0.0.1:4174/victim.html",
           XSS_VERIFIER_VICTIM_SHA256: "0".repeat(64),
+          XSS_VERIFIER_ATTACKER_PATH: join(directory, "attacker.html"),
+          XSS_VERIFIER_ATTACKER_URL: "http://127.0.0.1:4175/attacker.html",
           XSS_VERIFIER_DIALOG_TYPE: "alert",
           XSS_VERIFIER_DIALOG_MESSAGE: "proof",
           XSS_VERIFIER_FRAME_SCOPE: "top",

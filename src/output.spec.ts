@@ -54,6 +54,7 @@ const successResult: VerificationSuccess = {
   reason: "proof observed",
   evidence: {
     replayKind: "navigation",
+    interaction: { attemptedClicks: 0, successfulClicks: 0, failedClicks: 0 },
     submittedUrl: "http://127.0.0.1:4174/victim.html",
     browserVersion: "Chrome/1",
     dialogs: [],

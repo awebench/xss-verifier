@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import puppeteer, { type Browser, type Page } from "puppeteer-core";
+import puppeteer, { type Browser, type ElementHandle, type Page } from "puppeteer-core";
 
 import { DialogObserver } from "./browser.js";
 import { errorMessage, ProofError, TechnicalError } from "./errors.js";
@@ -10,14 +10,13 @@ import { readAttackerPage, readSubmission, readTrustedVictim } from "./files.js"
 import { verificationFailure, verificationSuccess } from "./results.js";
 import { serveResource, type RunningServer } from "./server.js";
 import type {
-  AttackerPageConfig,
-  NavigationConfig,
+  InteractionEvidence,
   ResourceConfig,
   VerificationEvidence,
   VerificationResult,
   VerifierConfig,
 } from "./types.js";
-import { truncateEvidence } from "./urls.js";
+import { sameDocumentBase, truncateEvidence } from "./urls.js";
 
 type ReplayInputs =
   | {
@@ -33,13 +32,19 @@ type ReplayInputs =
       attacker: ResourceConfig;
     };
 
-type InteractionResult =
-  | { kind: "none" }
-  | { kind: "clicked" }
-  | { kind: "ambiguous"; count: number }
-  | { kind: "failed"; reason: string };
+type ReplayResult = {
+  navigationError: string | null;
+  interaction: InteractionEvidence;
+};
+
+type ClickResult = "none" | "clicked" | "failed";
+
+const buttonSelector = "button";
+const replayPollMs = 50;
+const replayPassDelayMs = 250;
 
 export async function verify(config: VerifierConfig): Promise<VerificationResult> {
+  let replayKind: ReplayInputs["kind"] | null = null;
   let submittedUrl = "";
   let browserVersion = "";
   let browser: Browser | undefined;
@@ -53,10 +58,11 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
       inputs = await loadReplayInputs(config);
     } catch (error) {
       if (error instanceof ProofError) {
-        return verificationFailure(error.reasonCode, error.message, emptyEvidence(config));
+        return verificationFailure(error.reasonCode, error.message, emptyEvidence(replayKind));
       }
       throw error;
     }
+    replayKind = inputs.kind;
     submittedUrl = inputs.submission.href;
 
     servers.push(await serveResource(config.victim.url, inputs.victimBytes));
@@ -102,26 +108,30 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     observer = new DialogObserver(browser, config);
     await observer.start();
 
-    const replay = navigateAndMaybeClick(entryPage, inputs.submission, observer, config);
-
-    const matchingDialog = await observer.waitForMatch(config.timeoutMs);
-    const replayResult = await Promise.race([replay, delay(250).then(() => null)]);
-    const navigationError = replayResult?.navigationError ?? null;
-    const interaction: InteractionResult = replayResult?.interaction ?? { kind: "none" };
+    entryPage.setDefaultTimeout(Math.min(15_000, Math.max(1_000, config.timeoutMs)));
+    const replayResult = await navigateAndInteract(
+      browser,
+      entryPage,
+      inputs.submission,
+      observer,
+      config,
+    );
+    const matchingDialog = observer.match;
     const finalPages = await browser.pages();
     const finalUrls = finalPages
       .slice(0, config.limits.pages)
       .map((page) => truncateEvidence(page.url(), config.limits.characters));
     const evidence: VerificationEvidence = {
-      replayKind: config.kind,
+      replayKind,
+      interaction: replayResult.interaction,
       submittedUrl: truncateEvidence(submittedUrl, config.limits.characters),
       browserVersion,
       dialogs: [...observer.dialogs],
-      matchingDialog: observer.match,
+      matchingDialog,
       dialogLimitReached: observer.dialogLimitReached,
       finalUrls,
       pageLimitReached: finalPages.length > finalUrls.length,
-      navigationError,
+      navigationError: replayResult.navigationError,
     };
 
     if (matchingDialog) {
@@ -137,25 +147,12 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
         evidence,
       );
     }
-    if (navigationError) {
+    if (replayResult.navigationError) {
       return verificationFailure(
         "navigation_failed",
         "the submitted proof URL did not load",
         evidence,
       );
-    }
-    switch (interaction.kind) {
-      case "ambiguous":
-        return verificationFailure(
-          "button_ambiguous",
-          `the submitted page contains ${interaction.count} buttons; expected at most one`,
-          evidence,
-        );
-      case "failed":
-        return verificationFailure("button_click_failed", interaction.reason, evidence);
-      case "none":
-      case "clicked":
-        break;
     }
     return verificationFailure(
       "dialog_timeout",
@@ -170,89 +167,135 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
   }
 }
 
-async function navigateAndMaybeClick(
+async function navigateAndInteract(
+  browser: Browser,
   page: Page,
   submission: URL,
   observer: DialogObserver,
   config: VerifierConfig,
-): Promise<{ navigationError: string | null; interaction: InteractionResult }> {
-  try {
-    await page.goto(submission.href, {
+): Promise<ReplayResult> {
+  const interaction: InteractionEvidence = {
+    attemptedClicks: 0,
+    successfulClicks: 0,
+    failedClicks: 0,
+  };
+  const deadline = Date.now() + config.timeoutMs;
+  let navigationError: string | null = null;
+
+  const navigation = page
+    .goto(submission.href, {
       waitUntil: "load",
       timeout: Math.min(15_000, Math.max(1_000, config.timeoutMs)),
-    });
-  } catch (error) {
-    return {
-      navigationError: boundedError(error, config.limits.characters),
-      interaction: { kind: "none" },
-    };
+    })
+    .then(() => null)
+    .catch((error: unknown) => boundedError(error, config.limits.characters));
+  const firstMatch = observer.waitForMatch(remainingTime(deadline));
+  const initialResult = await Promise.race([
+    navigation.then((error) => ({ kind: "navigation" as const, error })),
+    firstMatch.then((match) => ({ kind: "dialog" as const, match })),
+  ]);
+
+  if (initialResult.kind === "dialog" && initialResult.match) {
+    return { navigationError: null, interaction };
+  }
+  if (initialResult.kind === "navigation") {
+    navigationError = initialResult.error;
+  } else {
+    return { navigationError, interaction };
   }
 
-  if (observer.match) {
-    return { navigationError: null, interaction: { kind: "none" } };
-  }
-
-  try {
-    const buttons = await page.$$("button");
-    try {
-      if (buttons.length > 1) {
-        return {
-          navigationError: null,
-          interaction: { kind: "ambiguous", count: buttons.length },
-        };
-      }
-      if (buttons.length === 0) {
-        return { navigationError: null, interaction: { kind: "none" } };
-      }
-      await buttons[0]!.click();
-      return { navigationError: null, interaction: { kind: "clicked" } };
-    } finally {
-      await Promise.allSettled(buttons.map(async (button) => button.dispose()));
+  while (remainingTime(deadline) > 0 && !observer.match) {
+    const clickResult = await clickNextButton(browser, config.limits.pages);
+    let waitMs = replayPollMs;
+    if (clickResult !== "none") {
+      interaction.attemptedClicks += 1;
+      if (clickResult === "clicked") interaction.successfulClicks += 1;
+      else interaction.failedClicks += 1;
+    } else {
+      await resetClaimedButtons(browser, config.limits.pages);
+      waitMs = replayPassDelayMs;
     }
-  } catch (error) {
-    return {
-      navigationError: null,
-      interaction: {
-        kind: "failed",
-        reason: `the page's only button could not be clicked: ${boundedError(
-          error,
-          config.limits.characters,
-        )}`,
-      },
-    };
+    await observer.waitForMatch(Math.min(waitMs, remainingTime(deadline)));
   }
+
+  return { navigationError, interaction };
+}
+
+async function clickNextButton(browser: Browser, pageLimit: number): Promise<ClickResult> {
+  const pages = (await browser.pages()).slice(0, pageLimit);
+  for (const page of pages) {
+    if (page.isClosed()) continue;
+    for (const frame of page.frames()) {
+      let buttons: ElementHandle<HTMLButtonElement>[];
+      try {
+        buttons = await frame.$$(buttonSelector);
+      } catch {
+        continue;
+      }
+      try {
+        for (const button of buttons) {
+          try {
+            if (!(await button.isVisible()) || !(await claimButton(button))) continue;
+            await button.click();
+            return "clicked";
+          } catch {
+            return "failed";
+          }
+        }
+      } finally {
+        await Promise.allSettled(buttons.map(async (button) => button.dispose()));
+      }
+    }
+  }
+  return "none";
+}
+
+async function claimButton(button: ElementHandle<HTMLButtonElement>): Promise<boolean> {
+  return button.evaluate((element) => {
+    if (element.disabled) return false;
+    const key = Symbol.for("xss-verifier.clicked-buttons");
+    const state = globalThis as typeof globalThis & {
+      [key: symbol]: WeakSet<Element> | undefined;
+    };
+    const clicked = state[key] ?? new WeakSet<Element>();
+    state[key] = clicked;
+    if (clicked.has(element)) return false;
+    clicked.add(element);
+    return true;
+  });
+}
+
+async function resetClaimedButtons(browser: Browser, pageLimit: number): Promise<void> {
+  const pages = (await browser.pages()).slice(0, pageLimit);
+  await Promise.allSettled(
+    pages.flatMap((page) =>
+      page.frames().map(async (frame) => {
+        await frame.evaluate(() => {
+          const key = Symbol.for("xss-verifier.clicked-buttons");
+          const state = globalThis as typeof globalThis & {
+            [key: symbol]: WeakSet<Element> | undefined;
+          };
+          state[key] = new WeakSet<Element>();
+        });
+      }),
+    ),
+  );
 }
 
 async function loadReplayInputs(config: VerifierConfig): Promise<ReplayInputs> {
-  const victimBytes = await readTrustedVictim(config.victim.path, config.victim.sha256);
-  switch (config.kind) {
-    case "navigation":
-      return loadNavigationInputs(config, victimBytes);
-    case "attacker-page":
-      return loadAttackerPageInputs(config, victimBytes);
-  }
-}
-
-async function loadNavigationInputs(
-  config: NavigationConfig,
-  victimBytes: Buffer,
-): Promise<ReplayInputs> {
-  const submission = await readSubmission(
-    config.submissionPath,
-    config.victim.url,
-    config.limits.submissionBytes,
-  );
-  return { kind: "navigation", victimBytes, submission };
-}
-
-async function loadAttackerPageInputs(
-  config: AttackerPageConfig,
-  victimBytes: Buffer,
-): Promise<ReplayInputs> {
-  const [attackerBytes, submission] = await Promise.all([
-    readAttackerPage(config.attacker.path, config.limits.attackerBytes),
-    readSubmission(config.submissionPath, config.attacker.url, config.limits.submissionBytes),
+  const [victimBytes, submission] = await Promise.all([
+    readTrustedVictim(config.victim.path, config.victim.sha256),
+    readSubmission(
+      config.submissionPath,
+      [config.victim.url, config.attacker.url],
+      config.limits.submissionBytes,
+    ),
   ]);
+  if (sameDocumentBase(submission, config.victim.url)) {
+    return { kind: "navigation", victimBytes, submission };
+  }
+
+  const attackerBytes = await readAttackerPage(config.attacker.path, config.limits.attackerBytes);
   return {
     kind: "attacker-page",
     victimBytes,
@@ -262,9 +305,10 @@ async function loadAttackerPageInputs(
   };
 }
 
-function emptyEvidence(config: VerifierConfig): VerificationEvidence {
+function emptyEvidence(replayKind: ReplayInputs["kind"] | null): VerificationEvidence {
   return {
-    replayKind: config.kind,
+    replayKind,
+    interaction: { attemptedClicks: 0, successfulClicks: 0, failedClicks: 0 },
     submittedUrl: "",
     browserVersion: "",
     dialogs: [],
@@ -280,6 +324,6 @@ function boundedError(error: unknown, limit: number): string {
   return truncateEvidence(errorMessage(error), Math.min(limit, 4096));
 }
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+function remainingTime(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
 }
