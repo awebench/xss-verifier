@@ -6,7 +6,9 @@ ARG CHROME_SHA256=ae8736ac28bc69278551500f219fc749575648263c43ec5990749eff43b9fc
 ARG CHROME_URL=https://storage.googleapis.com/chrome-for-testing-public/151.0.7922.34/linux64/chrome-linux64.zip
 
 RUN test "$TARGETARCH" = "amd64" \
-  && apt-get update \
+  && sed -i 's|URIs: http://deb.debian.org/debian$|URIs: http://snapshot.debian.org/archive/debian/20260223T000000Z|' /etc/apt/sources.list.d/debian.sources \
+  && sed -i 's|URIs: http://deb.debian.org/debian-security$|URIs: http://snapshot.debian.org/archive/debian-security/20260223T000000Z|' /etc/apt/sources.list.d/debian.sources \
+  && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     ca-certificates curl fonts-liberation libasound2 libatk-bridge2.0-0 \
     libatk1.0-0 libcairo2 libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 \
@@ -44,9 +46,9 @@ LABEL org.opencontainers.image.title="xss-verifier" \
   org.opencontainers.image.description="Deterministic browser replay for self-contained XSS proofs" \
   org.opencontainers.image.source="https://github.com/awebench/xss-verifier" \
   org.opencontainers.image.revision="$VCS_REF" \
-  org.opencontainers.image.version="0.3.0" \
+  org.opencontainers.image.version="0.4.0" \
   org.opencontainers.image.licenses="Apache-2.0" \
-  io.xss-verifier.contract-version="2" \
+  io.xss-verifier.contract-version="3" \
   io.xss-verifier.chrome-version="151.0.7922.34"
 
 RUN useradd --create-home --shell /bin/sh verifier \

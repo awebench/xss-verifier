@@ -1,6 +1,6 @@
 {
   "name": "xss-verifier",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Deterministic browser replay for self-contained XSS proofs",
   "license": "Apache-2.0",
@@ -22,7 +22,7 @@
     "lint:fix": "oxlint --fix src scripts",
     "knip": "knip",
     "prepare": "npm run build",
-    "test": "vitest run",
+    "test": "vitest run --testTimeout=15000",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

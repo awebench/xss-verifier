@@ -43,12 +43,12 @@ describe("dialog attribution", () => {
   });
 
   const mismatches: readonly [string, Partial<DialogEvidence>][] = [
-    ["attacker origin", { securityOrigin: "http://127.0.0.1:4173" }],
-    ["attacker document", { url: "http://127.0.0.1:4173/attacker.html" }],
+    ["attacker origin", { executionOrigin: "http://127.0.0.1:4173" }],
+    ["opaque origin", { executionOrigin: "null" }],
+    ["missing execution origin", { executionOrigin: null }],
     ["victim iframe", { topFrame: false }],
     ["wrong message", { message: "other" }],
     ["wrong type", { type: "confirm" }],
-    ["inherited blank frame", { frameUrl: "about:blank" }],
   ];
 
   it.each(mismatches)("rejects %s", (_name, changes) => {
@@ -61,5 +61,63 @@ describe("dialog attribution", () => {
       expectation: { ...config.expectation, frameScope: "any" },
     };
     expect(dialogMatches({ ...matchingDialog, topFrame: false }, anyFrameConfig)).toBe(true);
+  });
+
+  it.each(["about:blank", "about:srcdoc"])(
+    "accepts victim-origin execution in an inherited %s frame",
+    (url) => {
+      const anyFrameConfig: VerifierConfig = {
+        ...config,
+        expectation: { ...config.expectation, frameScope: "any" },
+      };
+      expect(
+        dialogMatches(
+          {
+            ...matchingDialog,
+            url,
+            frameUrl: url,
+            securityOrigin: "://",
+            topFrame: false,
+          },
+          anyFrameConfig,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("accepts a top-level victim-origin Blob document", () => {
+    expect(
+      dialogMatches(
+        {
+          ...matchingDialog,
+          url: "blob:http://127.0.0.1:4174/56e67eb1-3db7-46af-9e19-2aa534c41e45",
+          frameUrl: "blob:http://127.0.0.1:4174/56e67eb1-3db7-46af-9e19-2aa534c41e45",
+        },
+        config,
+      ),
+    ).toBe(true);
+  });
+
+  it("uses execution origin rather than document URL or reported security origin", () => {
+    expect(
+      dialogMatches(
+        {
+          ...matchingDialog,
+          url: "about:blank",
+          frameUrl: "about:blank",
+          securityOrigin: "http://127.0.0.1:4173",
+        },
+        config,
+      ),
+    ).toBe(true);
+    expect(
+      dialogMatches(
+        {
+          ...matchingDialog,
+          executionOrigin: "http://127.0.0.1:4173",
+        },
+        config,
+      ),
+    ).toBe(false);
   });
 });

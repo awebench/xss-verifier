@@ -2,7 +2,9 @@
 
 This is a tool that we use in `awebench-xss` for scoring XSS tasks. It replays
 a submitted proof in a Chrome browser and passes only when the expected
-JavaScript dialog comes from the victim page.
+JavaScript dialog executes in the victim origin. This includes victim-origin
+`blob:` documents and inherited `about:blank` or `about:srcdoc` documents, but
+excludes attacker and opaque origins.
 
 The submitted URL selects one of two replay entries:
 
@@ -49,6 +51,10 @@ Every CLI option also has a matching `XSS_VERIFIER_*` environment variable.
 
 The command returns JSON and exits with `0` for a valid proof, `1` for a
 rejected proof, or `2` for a configuration or runtime error.
+
+The published image disables Chrome's renderer sandbox because stock Docker
+does not expose the namespace privileges it requires. The verifier itself runs
+as a non-root user in a separate container with networking disabled.
 
 ## Docker and Harbor
 
