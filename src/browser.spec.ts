@@ -47,6 +47,37 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
   });
 
+  it("clicks a single button on the submitted page", async () => {
+    const victimPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victim = Buffer.from(
+      '<!doctype html><button type="button" onclick="alert(\'proof\')">Continue</button>',
+    );
+    await writeFile(victimPath, victim);
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    await writeFile(submissionPath, `${victimUrl.href}\n`);
+
+    const result = await verify(navigationConfig(victimPath, victimUrl, victim, submissionPath));
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+  });
+
+  it("rejects a submitted page with multiple buttons", async () => {
+    const victimPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victim = Buffer.from("<!doctype html><button>One</button><button>Two</button>");
+    await writeFile(victimPath, victim);
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    await writeFile(submissionPath, `${victimUrl.href}\n`);
+
+    const result = await verify({
+      ...navigationConfig(victimPath, victimUrl, victim, submissionPath),
+      timeoutMs: 500,
+    });
+    expect(result).toMatchObject({ passed: false, reasonCode: "button_ambiguous" });
+  });
+
   it("ignores an attacker alert and accepts a later victim-origin postMessage alert", async () => {
     const victimPort = await freePort();
     const attackerPort = await freePort();
@@ -60,10 +91,12 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
         if (event.origin === ${JSON.stringify(attackerUrl.origin)}) (0, eval)(event.data);
       });
     </script>`);
-    const attacker = Buffer.from(`<!doctype html><script>
+    const attacker = Buffer.from(`<!doctype html><button>Continue</button><script>
       alert("noise");
-      const victim = open(${JSON.stringify(victimUrl.href)});
-      setTimeout(() => victim.postMessage("alert('proof')", ${JSON.stringify(victimUrl.origin)}), 250);
+      document.querySelector("button").addEventListener("click", () => {
+        const victim = open(${JSON.stringify(victimUrl.href)});
+        setTimeout(() => victim.postMessage("alert('proof')", ${JSON.stringify(victimUrl.origin)}), 250);
+      });
     </script>`);
     await Promise.all([
       writeFile(victimPath, victim),

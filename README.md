@@ -6,8 +6,15 @@ JavaScript dialog comes from the victim page.
 
 It supports two replay modes:
 
-- `navigation` opens a submitted victim URL. For cases that execute once you visit a URL with for example a malicious query param.
-- `attacker-page` opens a separate attacker page that can interact with the victim. For cases, where there needs to be a separate attacker page that for example sends postMessages to victim page.
+- `navigation` opens a submitted victim URL, such as a URL containing a
+  malicious query parameter.
+- `attacker-page` hosts and opens a separate attacker page that can interact
+  with the victim, such as by sending it a `postMessage`.
+
+After the submitted page loads, the verifier clicks its only top-level
+`button`, if present, then continues waiting for the configured dialog. Pages
+with multiple buttons are rejected instead of choosing one implicitly. A page
+without a button is observed without interaction.
 
 ## Usage
 

@@ -21,6 +21,8 @@ const proofFailureCodes = [
   "submission_out_of_scope",
   "victim_missing",
   "victim_modified",
+  "button_ambiguous",
+  "button_click_failed",
   "dialog_mismatch",
   "navigation_failed",
   "dialog_timeout",

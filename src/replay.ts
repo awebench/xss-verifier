@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import puppeteer, { type Browser } from "puppeteer-core";
+import puppeteer, { type Browser, type Page } from "puppeteer-core";
 
 import { DialogObserver } from "./browser.js";
 import { errorMessage, ProofError, TechnicalError } from "./errors.js";
@@ -32,6 +32,12 @@ type ReplayInputs =
       submission: URL;
       attacker: ResourceConfig;
     };
+
+type InteractionResult =
+  | { kind: "none" }
+  | { kind: "clicked" }
+  | { kind: "ambiguous"; count: number }
+  | { kind: "failed"; reason: string };
 
 export async function verify(config: VerifierConfig): Promise<VerificationResult> {
   let submittedUrl = "";
@@ -96,19 +102,12 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     observer = new DialogObserver(browser, config);
     await observer.start();
 
-    let navigationError: string | null = null;
-    const navigation = entryPage
-      .goto(inputs.submission.href, {
-        waitUntil: "load",
-        timeout: Math.min(15_000, Math.max(1_000, config.timeoutMs)),
-      })
-      .catch((error: unknown) => {
-        navigationError = boundedError(error, config.limits.characters);
-        return null;
-      });
+    const replay = navigateAndMaybeClick(entryPage, inputs.submission, observer, config);
 
     const matchingDialog = await observer.waitForMatch(config.timeoutMs);
-    await Promise.race([navigation, delay(250)]);
+    const replayResult = await Promise.race([replay, delay(250).then(() => null)]);
+    const navigationError = replayResult?.navigationError ?? null;
+    const interaction: InteractionResult = replayResult?.interaction ?? { kind: "none" };
     const finalPages = await browser.pages();
     const finalUrls = finalPages
       .slice(0, config.limits.pages)
@@ -145,6 +144,19 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
         evidence,
       );
     }
+    switch (interaction.kind) {
+      case "ambiguous":
+        return verificationFailure(
+          "button_ambiguous",
+          `the submitted page contains ${interaction.count} buttons; expected at most one`,
+          evidence,
+        );
+      case "failed":
+        return verificationFailure("button_click_failed", interaction.reason, evidence);
+      case "none":
+      case "clicked":
+        break;
+    }
     return verificationFailure(
       "dialog_timeout",
       "no matching browser dialog was observed before timeout",
@@ -155,6 +167,59 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     await browser?.close().catch(() => {});
     await Promise.allSettled(servers.map(async (server) => server.close()));
     if (profile) await rm(profile, { recursive: true, force: true });
+  }
+}
+
+async function navigateAndMaybeClick(
+  page: Page,
+  submission: URL,
+  observer: DialogObserver,
+  config: VerifierConfig,
+): Promise<{ navigationError: string | null; interaction: InteractionResult }> {
+  try {
+    await page.goto(submission.href, {
+      waitUntil: "load",
+      timeout: Math.min(15_000, Math.max(1_000, config.timeoutMs)),
+    });
+  } catch (error) {
+    return {
+      navigationError: boundedError(error, config.limits.characters),
+      interaction: { kind: "none" },
+    };
+  }
+
+  if (observer.match) {
+    return { navigationError: null, interaction: { kind: "none" } };
+  }
+
+  try {
+    const buttons = await page.$$("button");
+    try {
+      if (buttons.length > 1) {
+        return {
+          navigationError: null,
+          interaction: { kind: "ambiguous", count: buttons.length },
+        };
+      }
+      if (buttons.length === 0) {
+        return { navigationError: null, interaction: { kind: "none" } };
+      }
+      await buttons[0]!.click();
+      return { navigationError: null, interaction: { kind: "clicked" } };
+    } finally {
+      await Promise.allSettled(buttons.map(async (button) => button.dispose()));
+    }
+  } catch (error) {
+    return {
+      navigationError: null,
+      interaction: {
+        kind: "failed",
+        reason: `the page's only button could not be clicked: ${boundedError(
+          error,
+          config.limits.characters,
+        )}`,
+      },
+    };
   }
 }
 
