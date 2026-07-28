@@ -6,9 +6,10 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from "puppetee
 
 import { DialogObserver } from "./browser.js";
 import { errorMessage, ProofError, TechnicalError } from "./errors.js";
-import { readAttackerPage, readSubmission, readTrustedVictim } from "./files.js";
+import { readAttackerPage, readSubmission, readTrustedServer, readTrustedVictim } from "./files.js";
 import { verificationFailure, verificationSuccess } from "./results.js";
 import { serveResource, type RunningServer } from "./server.js";
+import { startTaskServer, type RunningTaskServer } from "./task-server.js";
 import type {
   InteractionEvidence,
   ResourceConfig,
@@ -19,18 +20,20 @@ import type {
 import { sameDocumentBase, truncateEvidence } from "./urls.js";
 
 type ReplayInputs =
-  | {
+  | ({
       kind: "navigation";
       victimBytes: Buffer;
       submission: URL;
-    }
-  | {
+    } & TrustedServerInput)
+  | ({
       kind: "attacker-page";
       victimBytes: Buffer;
       attackerBytes: Buffer;
       submission: URL;
       attacker: ResourceConfig;
-    };
+    } & TrustedServerInput);
+
+type TrustedServerInput = { serverBytes?: Buffer };
 
 type ReplayResult = {
   navigationError: string | null;
@@ -40,6 +43,7 @@ type ReplayResult = {
 type ClickResult = "none" | "clicked" | "failed";
 
 const buttonSelector = "button";
+const nativeClickTimeoutMs = 1_000;
 const replayPollMs = 50;
 const replayPassDelayMs = 250;
 
@@ -50,6 +54,7 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
   let browser: Browser | undefined;
   let observer: DialogObserver | undefined;
   let profile: string | undefined;
+  let taskServer: RunningTaskServer | undefined;
   const servers: RunningServer[] = [];
 
   try {
@@ -65,9 +70,20 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     replayKind = inputs.kind;
     submittedUrl = inputs.submission.href;
 
-    servers.push(await serveResource(config.victim.url, inputs.victimBytes));
-    if (inputs.kind === "attacker-page") {
-      servers.push(await serveResource(inputs.attacker.url, inputs.attackerBytes));
+    if (inputs.serverBytes !== undefined) {
+      taskServer = await startTaskServer({
+        serverBytes: inputs.serverBytes,
+        victim: { ...config.victim, bytes: inputs.victimBytes },
+        attacker: {
+          ...config.attacker,
+          ...(inputs.kind === "attacker-page" ? { bytes: inputs.attackerBytes } : {}),
+        },
+      });
+    } else {
+      servers.push(await serveResource(config.victim.url, inputs.victimBytes));
+      if (inputs.kind === "attacker-page") {
+        servers.push(await serveResource(inputs.attacker.url, inputs.attackerBytes));
+      }
     }
 
     profile = await mkdtemp(join(tmpdir(), "xss-verifier-"));
@@ -96,6 +112,7 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
       });
     }
 
+    taskServer?.assertRunning();
     browserVersion = await browser.version();
     if (browserVersion !== `Chrome/${config.browser.expectedVersion}`) {
       throw new TechnicalError(
@@ -109,15 +126,14 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     await observer.start();
 
     entryPage.setDefaultTimeout(Math.min(15_000, Math.max(1_000, config.timeoutMs)));
-    const replayResult = await navigateAndInteract(
-      browser,
-      entryPage,
-      inputs.submission,
-      observer,
-      config,
-    );
+    const replay = navigateAndInteract(browser, entryPage, inputs.submission, observer, config);
+    const replayResult =
+      taskServer === undefined
+        ? await replay
+        : await Promise.race([replay, taskServer.waitForUnexpectedExit()]);
     const matchingDialog = observer.match;
     const finalPages = await browser.pages();
+    taskServer?.assertRunning();
     const finalUrls = finalPages
       .slice(0, config.limits.pages)
       .map((page) => truncateEvidence(page.url(), config.limits.characters));
@@ -161,9 +177,71 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     );
   } finally {
     observer?.stop();
-    await browser?.close().catch(() => {});
-    await Promise.allSettled(servers.map(async (server) => server.close()));
+    if (browser) await closeBrowser(browser);
+    await cleanUpReplayResources(servers, taskServer, profile);
+  }
+}
+
+export async function closeBrowser(browser: Browser, timeoutMs = 5_000): Promise<void> {
+  let timedOut = false;
+  let timeout: NodeJS.Timeout | undefined;
+  const close = browser.close().catch(() => {});
+  await Promise.race([
+    close,
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(() => {
+        timedOut = true;
+        resolve();
+      }, timeoutMs);
+    }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (!timedOut) return;
+  browser.process()?.kill("SIGKILL");
+}
+
+async function cleanUpReplayResources(
+  staticServers: readonly RunningServer[],
+  taskServer: RunningTaskServer | undefined,
+  profile: string | undefined,
+): Promise<void> {
+  let serverCloseError: Error | undefined;
+  try {
+    await closeReplayServers(staticServers, taskServer);
+  } catch (error) {
+    serverCloseError =
+      error instanceof Error
+        ? error
+        : new TechnicalError(`cannot stop replay servers: ${errorMessage(error)}`);
+  }
+
+  try {
     if (profile) await rm(profile, { recursive: true, force: true });
+  } catch (error) {
+    if (serverCloseError === undefined) {
+      throw error instanceof Error
+        ? error
+        : new TechnicalError(`cannot remove browser profile: ${errorMessage(error)}`);
+    }
+  }
+  if (serverCloseError !== undefined) throw serverCloseError;
+}
+
+export async function closeReplayServers(
+  staticServers: readonly RunningServer[],
+  taskServer: RunningTaskServer | undefined,
+): Promise<void> {
+  const results = await Promise.allSettled([
+    ...staticServers.map(async (server) => server.close()),
+    ...(taskServer === undefined ? [] : [taskServer.close()]),
+  ]);
+  if (taskServer === undefined) return;
+  const taskServerResult = results[staticServers.length];
+  if (taskServerResult?.status === "rejected") {
+    throw new TechnicalError(
+      `cannot stop trusted task server: ${errorMessage(taskServerResult.reason)}`,
+      { cause: taskServerResult.reason },
+    );
   }
 }
 
@@ -205,7 +283,11 @@ async function navigateAndInteract(
   }
 
   while (remainingTime(deadline) > 0 && !observer.match) {
-    const clickResult = await clickNextButton(browser, config.limits.pages);
+    const clickResult = await clickNextButton(
+      browser,
+      config.limits.pages,
+      Math.min(nativeClickTimeoutMs, remainingTime(deadline)),
+    );
     let waitMs = replayPollMs;
     if (clickResult !== "none") {
       interaction.attemptedClicks += 1;
@@ -221,7 +303,11 @@ async function navigateAndInteract(
   return { navigationError, interaction };
 }
 
-async function clickNextButton(browser: Browser, pageLimit: number): Promise<ClickResult> {
+async function clickNextButton(
+  browser: Browser,
+  pageLimit: number,
+  clickTimeoutMs: number,
+): Promise<ClickResult> {
   const pages = (await browser.pages()).slice(0, pageLimit);
   for (const page of pages) {
     if (page.isClosed()) continue;
@@ -236,8 +322,7 @@ async function clickNextButton(browser: Browser, pageLimit: number): Promise<Cli
         for (const button of buttons) {
           try {
             if (!(await button.isVisible()) || !(await claimButton(button))) continue;
-            await button.click();
-            return "clicked";
+            return (await activateButton(button, clickTimeoutMs)) ? "clicked" : "failed";
           } catch {
             return "failed";
           }
@@ -248,6 +333,43 @@ async function clickNextButton(browser: Browser, pageLimit: number): Promise<Cli
     }
   }
   return "none";
+}
+
+export async function activateButton(
+  button: ElementHandle<HTMLButtonElement>,
+  timeoutMs = nativeClickTimeoutMs,
+): Promise<boolean> {
+  const nativeClick = button.click().then(
+    () => "clicked" as const,
+    () => "failed" as const,
+  );
+  let timeout: NodeJS.Timeout | undefined;
+  const result = await Promise.race([
+    nativeClick,
+    new Promise<"timed-out">((resolve) => {
+      timeout = setTimeout(() => resolve("timed-out"), timeoutMs);
+    }),
+  ]);
+  if (timeout) clearTimeout(timeout);
+  if (result === "clicked") {
+    return true;
+  }
+  const domActivation = button
+    .evaluate((element) => {
+      if (!element.isConnected || element.disabled) return false;
+      element.click();
+      return true;
+    })
+    .catch(() => false);
+  let domTimeout: NodeJS.Timeout | undefined;
+  const activated = await Promise.race([
+    domActivation,
+    new Promise<false>((resolve) => {
+      domTimeout = setTimeout(() => resolve(false), timeoutMs);
+    }),
+  ]);
+  if (domTimeout) clearTimeout(domTimeout);
+  return activated;
 }
 
 async function claimButton(button: ElementHandle<HTMLButtonElement>): Promise<boolean> {
@@ -283,16 +405,20 @@ async function resetClaimedButtons(browser: Browser, pageLimit: number): Promise
 }
 
 async function loadReplayInputs(config: VerifierConfig): Promise<ReplayInputs> {
-  const [victimBytes, submission] = await Promise.all([
+  const [victimBytes, submission, serverBytes] = await Promise.all([
     readTrustedVictim(config.victim.path, config.victim.sha256),
     readSubmission(
       config.submissionPath,
       [config.victim.url, config.attacker.url],
       config.limits.submissionBytes,
     ),
+    config.server === undefined
+      ? Promise.resolve(undefined)
+      : readTrustedServer(config.server.path, config.server.sha256),
   ]);
+  const trustedServer = serverBytes === undefined ? {} : { serverBytes };
   if (sameDocumentBase(submission, config.victim.url)) {
-    return { kind: "navigation", victimBytes, submission };
+    return { kind: "navigation", victimBytes, submission, ...trustedServer };
   }
 
   const attackerBytes = await readAttackerPage(config.attacker.path, config.limits.attackerBytes);
@@ -302,6 +428,7 @@ async function loadReplayInputs(config: VerifierConfig): Promise<ReplayInputs> {
     attackerBytes,
     submission,
     attacker: config.attacker,
+    ...trustedServer,
   };
 }
 

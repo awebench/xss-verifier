@@ -3,7 +3,12 @@ import { parseArgs } from "node:util";
 import { z } from "zod";
 
 import { ConfigError, errorMessage } from "./errors.js";
-import { dialogTypes, type Invocation, type VerifierConfig } from "./types.js";
+import {
+  dialogTypes,
+  type Invocation,
+  type TrustedTaskServerConfig,
+  type VerifierConfig,
+} from "./types.js";
 import { parseConfiguredUrl } from "./urls.js";
 
 type EnvironmentName = `XSS_VERIFIER_${string}`;
@@ -75,6 +80,23 @@ const optionDefinitions = {
     description: "Lowercase SHA-256 of the victim",
     required: true,
     schema: z.string().regex(/^[a-f0-9]{64}$/u, "must be a lowercase SHA-256 digest"),
+  }),
+  serverPath: defineOption({
+    cli: "server-path",
+    environment: "XSS_VERIFIER_SERVER_PATH",
+    valueName: "PATH",
+    description: "Optional trusted task server module",
+    schema: z.string().min(1).optional(),
+  }),
+  serverSha256: defineOption({
+    cli: "server-sha256",
+    environment: "XSS_VERIFIER_SERVER_SHA256",
+    valueName: "HEX",
+    description: "Lowercase SHA-256 of the trusted task server",
+    schema: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/u, "must be a lowercase SHA-256 digest")
+      .optional(),
   }),
   attackerPath: defineOption({
     cli: "attacker-path",
@@ -287,6 +309,18 @@ export function parseVerifierConfig(
   parsed: ParsedArguments,
   environment: NodeJS.ProcessEnv = process.env,
 ): VerifierConfig {
+  const serverPath = parseOption("serverPath", parsed, environment);
+  const serverSha256 = parseOption("serverSha256", parsed, environment);
+  if ((serverPath === undefined) !== (serverSha256 === undefined)) {
+    throw new ConfigError(
+      "XSS_VERIFIER_SERVER_PATH and XSS_VERIFIER_SERVER_SHA256 must be configured together",
+    );
+  }
+  const server: TrustedTaskServerConfig | undefined =
+    serverPath !== undefined && serverSha256 !== undefined
+      ? { path: serverPath, sha256: serverSha256 }
+      : undefined;
+
   const victimUrl = parseConfiguredUrl(
     parseOption("victimUrl", parsed, environment),
     "XSS_VERIFIER_VICTIM_URL",
@@ -310,6 +344,7 @@ export function parseVerifierConfig(
       path: parseOption("attackerPath", parsed, environment),
       url: attackerUrl,
     },
+    ...(server === undefined ? {} : { server }),
     expectation: {
       dialogType: parseOption("dialogType", parsed, environment),
       message: parseOption("dialogMessage", parsed, environment),

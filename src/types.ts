@@ -19,6 +19,8 @@ const proofFailureCodes = [
   "submission_not_absolute",
   "submission_credentials",
   "submission_out_of_scope",
+  "server_missing",
+  "server_modified",
   "victim_missing",
   "victim_modified",
   "dialog_mismatch",
@@ -30,6 +32,11 @@ export type ProofFailureCode = (typeof proofFailureCodes)[number];
 export interface ResourceConfig {
   path: string;
   url: URL;
+}
+
+export interface TrustedTaskServerConfig {
+  path: string;
+  sha256: string;
 }
 
 interface DialogExpectation {
@@ -50,6 +57,7 @@ export interface VerifierConfig {
   submissionPath: string;
   victim: ResourceConfig & { sha256: string };
   attacker: ResourceConfig;
+  server?: TrustedTaskServerConfig;
   expectation: DialogExpectation;
   browser: {
     executablePath: string;

@@ -46,9 +46,9 @@ LABEL org.opencontainers.image.title="xss-verifier" \
   org.opencontainers.image.description="Deterministic browser replay for self-contained XSS proofs" \
   org.opencontainers.image.source="https://github.com/awebench/xss-verifier" \
   org.opencontainers.image.revision="$VCS_REF" \
-  org.opencontainers.image.version="0.4.0" \
+  org.opencontainers.image.version="0.5.0" \
   org.opencontainers.image.licenses="Apache-2.0" \
-  io.xss-verifier.contract-version="3" \
+  io.xss-verifier.contract-version="4" \
   io.xss-verifier.chrome-version="151.0.7922.34"
 
 RUN useradd --create-home --shell /bin/sh verifier \

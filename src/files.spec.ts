@@ -4,17 +4,19 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { readSubmission, readTrustedVictim, sha256 } from "./files.js";
+import { readSubmission, readTrustedServer, readTrustedVictim, sha256 } from "./files.js";
 
 describe("artifact and submission validation", () => {
   let directory: string;
   let submissionPath: string;
+  let serverPath: string;
   let victimPath: string;
   let victimUrl: URL;
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), "xss-verifier-files-"));
     submissionPath = join(directory, "finding.txt");
+    serverPath = join(directory, "server.mjs");
     victimPath = join(directory, "victim.html");
     victimUrl = new URL("http://127.0.0.1:4174/victim.html");
   });
@@ -70,6 +72,31 @@ describe("artifact and submission validation", () => {
     await rm(victimPath);
     await expect(readTrustedVictim(victimPath, sha256(bytes))).rejects.toMatchObject({
       reasonCode: "victim_missing",
+    });
+  });
+
+  it("verifies trusted task server bytes exactly", async () => {
+    const bytes = Buffer.from("import { createServer } from 'node:http';\n");
+    await writeFile(serverPath, bytes);
+    await expect(readTrustedServer(serverPath, sha256(bytes))).resolves.toEqual(bytes);
+    await expect(readTrustedServer(serverPath, "0".repeat(64))).rejects.toMatchObject({
+      reasonCode: "server_modified",
+    });
+
+    await rm(serverPath);
+    await expect(readTrustedServer(serverPath, sha256(bytes))).rejects.toMatchObject({
+      reasonCode: "server_missing",
+    });
+  });
+
+  it("rejects a trusted task server symlink", async () => {
+    const target = join(directory, "server-target.mjs");
+    const bytes = Buffer.from("setInterval(() => {}, 1000);\n");
+    await writeFile(target, bytes);
+    await symlink(target, serverPath);
+
+    await expect(readTrustedServer(serverPath, sha256(bytes))).rejects.toMatchObject({
+      reasonCode: "unsafe_artifact",
     });
   });
 });

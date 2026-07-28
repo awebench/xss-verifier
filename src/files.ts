@@ -80,17 +80,41 @@ function metadataChanged(before: BigIntStats, after: BigIntStats): boolean {
 }
 
 export async function readTrustedVictim(path: string, expectedSha256: string): Promise<Buffer> {
-  const bytes = await readArtifactForProof(
+  return readTrustedArtifact(
     path,
     16 * 1024 * 1024,
     "victim_missing",
     "the trusted victim reproduction is missing",
+    "victim_modified",
+    "the trusted victim reproduction does not match its configured SHA-256",
+    expectedSha256,
   );
+}
+
+export async function readTrustedServer(path: string, expectedSha256: string): Promise<Buffer> {
+  return readTrustedArtifact(
+    path,
+    4 * 1024 * 1024,
+    "server_missing",
+    "the trusted task server is missing",
+    "server_modified",
+    "the trusted task server does not match its configured SHA-256",
+    expectedSha256,
+  );
+}
+
+async function readTrustedArtifact(
+  path: string,
+  maxBytes: number,
+  missingCode: ProofFailureCode,
+  missingMessage: string,
+  modifiedCode: ProofFailureCode,
+  modifiedMessage: string,
+  expectedSha256: string,
+): Promise<Buffer> {
+  const bytes = await readArtifactForProof(path, maxBytes, missingCode, missingMessage);
   if (sha256(bytes) !== expectedSha256) {
-    throw new ProofError(
-      "victim_modified",
-      "the trusted victim reproduction does not match its configured SHA-256",
-    );
+    throw new ProofError(modifiedCode, modifiedMessage);
   }
   return bytes;
 }

@@ -51,6 +51,46 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     });
   });
 
+  it("replays a navigation through a trusted dynamic task server", async () => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const serverPath = join(directory, "server.mjs");
+    const submissionPath = join(directory, "finding.txt");
+    const victim = Buffer.from("<!doctype html><p>Dynamic victim</p>");
+    const server = Buffer.from(`
+      import { createServer } from "node:http";
+      const victim = new URL(process.env.XSS_TASK_VICTIM_URL);
+      const attacker = new URL(process.env.XSS_TASK_ATTACKER_URL);
+      createServer((request, response) => {
+        const url = new URL(request.url ?? "/", victim);
+        if (url.pathname !== victim.pathname) {
+          response.writeHead(404).end();
+          return;
+        }
+        const payload = url.searchParams.get("payload");
+        response.writeHead(200, { "Content-Type": "text/html" });
+        response.end("<!doctype html><script>" + (payload ?? "") + "</script>");
+      }).listen(Number(victim.port), victim.hostname);
+      createServer((_request, response) => response.writeHead(404).end())
+        .listen(Number(attacker.port), attacker.hostname);
+    `);
+    await Promise.all([writeFile(victimPath, victim), writeFile(serverPath, server)]);
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    await writeFile(submissionPath, `${victimUrl.href}?payload=alert%28%27proof%27%29\n`);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: join(directory, "attacker.html"),
+        url: new URL(`http://127.0.0.1:${attackerPort}/attacker.html`),
+      }),
+      server: { path: serverPath, sha256: sha256(server) },
+    });
+
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence.replayKind).toBe("navigation");
+  });
+
   it("clicks a button on the victim page", async () => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");
@@ -95,6 +135,70 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
       failedClicks: 0,
     });
   });
+
+  it("bounds native activation for a form targeting a named popup", async () => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const attackerPath = join(directory, "attacker.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
+    const victim = Buffer.from(`<!doctype html><script>
+      const mode = new URLSearchParams(location.search).get("mode");
+      if (mode === "callback") {
+        opener.postMessage(location.hash.slice(1), location.origin);
+      } else if (mode !== "authorize") {
+        let bridge;
+        addEventListener("message", event => {
+          if (event.origin === location.origin && event.source === bridge) {
+            (0, eval)(event.data);
+          }
+        });
+        setTimeout(() => {
+          bridge = open("?mode=authorize", "auditBridge");
+        }, 100);
+      }
+    </script>`);
+    const attacker = Buffer.from(`<!doctype html>
+      <button id="connect">Connect</button>
+      <form action=${JSON.stringify(`${victimUrl.href}#alert('proof')`)} target="auditBridge">
+        <input name="mode" value="callback" hidden>
+        <button id="finish" disabled>Finish</button>
+      </form>
+      <iframe id="victim"></iframe>
+      <script>
+        connect.onclick = () => {
+          connect.disabled = true;
+          victim.src = ${JSON.stringify(victimUrl.href)};
+          setTimeout(() => { finish.disabled = false }, 300);
+        };
+      </script>`);
+    await Promise.all([
+      writeFile(victimPath, victim),
+      writeFile(attackerPath, attacker),
+      writeFile(submissionPath, `${attackerUrl.href}\n`),
+    ]);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+      expectation: { dialogType: "alert", message: "proof", frameScope: "any" },
+    });
+
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence.interaction).toMatchObject({
+      attemptedClicks: 2,
+      successfulClicks: 2,
+      failedClicks: 0,
+    });
+    expect(result.evidence.matchingDialog).toMatchObject({
+      securityOrigin: victimUrl.origin,
+      executionOrigin: victimUrl.origin,
+    });
+  }, 30_000);
 
   it("can click the same button repeatedly", async () => {
     const victimPort = await freePort();

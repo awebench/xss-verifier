@@ -34,6 +34,29 @@ describe("configuration", () => {
       },
     });
     expect(invocation.config.victim.url.href).toBe("http://127.0.0.1:4174/victim.html");
+    expect(invocation.config.server).toBeUndefined();
+  });
+
+  it("accepts a paired trusted task server path and digest", () => {
+    const invocation = parseRun([], {
+      ...baseEnvironment,
+      XSS_VERIFIER_SERVER_PATH: "/work/server.mjs",
+      XSS_VERIFIER_SERVER_SHA256: "b".repeat(64),
+    });
+
+    expect(invocation.config.server).toEqual({
+      path: "/work/server.mjs",
+      sha256: "b".repeat(64),
+    });
+  });
+
+  it.each([
+    [{ XSS_VERIFIER_SERVER_PATH: "/work/server.mjs" }],
+    [{ XSS_VERIFIER_SERVER_SHA256: "b".repeat(64) }],
+  ])("requires trusted task server fields to be configured together", (addition) => {
+    expect(() => parseInvocation([], { ...baseEnvironment, ...addition })).toThrowError(
+      /SERVER_PATH and XSS_VERIFIER_SERVER_SHA256 must be configured together/u,
+    );
   });
 
   it("requires attacker-page fields and separate loopback origins", () => {
@@ -52,6 +75,14 @@ describe("configuration", () => {
       /SUBMISSION_PATH is required/u,
     ],
     ["bad digest", { XSS_VERIFIER_VICTIM_SHA256: "abc" }, /lowercase SHA-256/u],
+    [
+      "bad server digest",
+      {
+        XSS_VERIFIER_SERVER_PATH: "/work/server.mjs",
+        XSS_VERIFIER_SERVER_SHA256: "abc",
+      },
+      /lowercase SHA-256/u,
+    ],
     ["file victim", { XSS_VERIFIER_VICTIM_URL: "file:///work/victim.html" }, /loopback http/u],
     ["remote victim", { XSS_VERIFIER_VICTIM_URL: "https://example.com/victim" }, /loopback http/u],
     ["bad timeout", { XSS_VERIFIER_TIMEOUT_MS: "0" }, /between 100 and 30000/u],
