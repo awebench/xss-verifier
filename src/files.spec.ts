@@ -4,7 +4,14 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { readSubmission, readTrustedServer, readTrustedVictim, sha256 } from "./files.js";
+import {
+  readAttackerPage,
+  readOptionalAttackerPage,
+  readSubmission,
+  readTrustedServer,
+  readTrustedVictim,
+  sha256,
+} from "./files.js";
 
 describe("artifact and submission validation", () => {
   let directory: string;
@@ -97,6 +104,27 @@ describe("artifact and submission validation", () => {
 
     await expect(readTrustedServer(serverPath, sha256(bytes))).rejects.toMatchObject({
       reasonCode: "unsafe_artifact",
+    });
+  });
+
+  it("allows only a genuinely missing optional attacker page", async () => {
+    const attackerPath = join(directory, "attacker.html");
+    await expect(readOptionalAttackerPage(attackerPath, 4096)).resolves.toBeUndefined();
+    await expect(readAttackerPage(attackerPath, 4096)).rejects.toMatchObject({
+      reasonCode: "attacker_missing",
+    });
+
+    const target = join(directory, "attacker-target.html");
+    await writeFile(target, "<!doctype html>");
+    await symlink(target, attackerPath);
+    await expect(readOptionalAttackerPage(attackerPath, 4096)).rejects.toMatchObject({
+      reasonCode: "unsafe_artifact",
+    });
+
+    await rm(attackerPath);
+    await writeFile(attackerPath, Buffer.from([0xff]));
+    await expect(readOptionalAttackerPage(attackerPath, 4096)).rejects.toMatchObject({
+      reasonCode: "attacker_invalid_utf8",
     });
   });
 });

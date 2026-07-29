@@ -14,11 +14,12 @@ The submitted URL selects one of two replay entries:
 - `attacker-page` hosts and opens a separate attacker page that can interact
   with the victim, such as by sending it a `postMessage`.
 
-The attacker artifact is optional when the victim URL is submitted. While
-waiting for a proof, the verifier repeatedly clicks visible enabled `button`
-elements in document order across pages and frames. It does not require,
-forbid, or cap a solution's clicks; the configured replay timeout is the
-execution bound.
+The attacker artifact is optional when the victim URL is submitted. When it is
+present, the verifier still hosts it so a direct-navigation proof can load it
+as an auxiliary resource. While waiting for a proof, the verifier repeatedly
+clicks visible enabled `button` elements in document order across pages and
+frames. It does not require, forbid, or cap a solution's clicks; the configured
+replay timeout is the execution bound.
 
 Tasks with timing-sensitive browser behavior may opt into zero to seven
 `dialog_timeout` retries with `--dialog-timeout-retries` or

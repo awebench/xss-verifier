@@ -91,6 +91,74 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     expect(result.evidence.replayKind).toBe("navigation");
   });
 
+  it.each([
+    ["static", false],
+    ["trusted task server", true],
+  ])("stages an auxiliary attacker page for direct %s navigation", async (_name, dynamic) => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const attackerPath = join(directory, "attacker.html");
+    const serverPath = join(directory, "server.mjs");
+    const submissionPath = join(directory, "finding.txt");
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
+    const victim = Buffer.from(`<!doctype html><body><script>
+      addEventListener("message", event => {
+        if (
+          event.origin === ${JSON.stringify(attackerUrl.origin)} &&
+          event.data === "proof"
+        ) alert("proof");
+      });
+    </script><iframe src=${JSON.stringify(attackerUrl.href)}></iframe></body>`);
+    const attacker = Buffer.from(`<script>
+      parent.postMessage("proof", ${JSON.stringify(victimUrl.origin)});
+    </script>`);
+    const server = Buffer.from(`
+      import { readFile } from "node:fs/promises";
+      import { createServer } from "node:http";
+      const resources = [
+        [process.env.XSS_TASK_VICTIM_URL, process.env.REPRODUCTION_FILE],
+        [process.env.XSS_TASK_ATTACKER_URL, process.env.ATTACKER_FILE],
+      ];
+      for (const [urlValue, path] of resources) {
+        const url = new URL(urlValue);
+        createServer(async (request, response) => {
+          const requestUrl = new URL(request.url ?? "/", url);
+          if (requestUrl.pathname !== url.pathname) {
+            response.writeHead(404).end();
+            return;
+          }
+          const bytes = await readFile(path);
+          response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }).end(bytes);
+        }).listen(Number(url.port), url.hostname);
+      }
+    `);
+    await Promise.all([
+      writeFile(victimPath, victim),
+      writeFile(attackerPath, attacker),
+      writeFile(submissionPath, `${victimUrl.href}\n`),
+      ...(dynamic ? [writeFile(serverPath, server)] : []),
+    ]);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+      ...(dynamic ? { server: { path: serverPath, sha256: sha256(server) } } : {}),
+    });
+
+    expect(result).toMatchObject({ passed: true, reasonCode: "proof_observed" });
+    expect(result.evidence).toMatchObject({
+      replayKind: "navigation",
+      matchingDialog: {
+        securityOrigin: victimUrl.origin,
+        executionOrigin: victimUrl.origin,
+      },
+    });
+  });
+
   it("clicks a button on the victim page", async () => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");

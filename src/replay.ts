@@ -6,13 +6,18 @@ import puppeteer, { type Browser, type ElementHandle, type Page } from "puppetee
 
 import { DialogObserver } from "./browser.js";
 import { errorMessage, ProofError, TechnicalError } from "./errors.js";
-import { readAttackerPage, readSubmission, readTrustedServer, readTrustedVictim } from "./files.js";
+import {
+  readAttackerPage,
+  readOptionalAttackerPage,
+  readSubmission,
+  readTrustedServer,
+  readTrustedVictim,
+} from "./files.js";
 import { verificationFailure, verificationSuccess } from "./results.js";
 import { serveResource, type RunningServer } from "./server.js";
 import { startTaskServer, type RunningTaskServer } from "./task-server.js";
 import type {
   InteractionEvidence,
-  ResourceConfig,
   VerificationEvidence,
   VerificationResult,
   VerifierConfig,
@@ -23,6 +28,7 @@ type ReplayInputs =
   | ({
       kind: "navigation";
       victimBytes: Buffer;
+      attackerBytes?: Buffer;
       submission: URL;
     } & TrustedServerInput)
   | ({
@@ -30,7 +36,6 @@ type ReplayInputs =
       victimBytes: Buffer;
       attackerBytes: Buffer;
       submission: URL;
-      attacker: ResourceConfig;
     } & TrustedServerInput);
 
 type TrustedServerInput = { serverBytes?: Buffer };
@@ -107,13 +112,13 @@ async function runReplayAttempt(
         victim: { ...config.victim, bytes: inputs.victimBytes },
         attacker: {
           ...config.attacker,
-          ...(inputs.kind === "attacker-page" ? { bytes: inputs.attackerBytes } : {}),
+          ...(inputs.attackerBytes === undefined ? {} : { bytes: inputs.attackerBytes }),
         },
       });
     } else {
       servers.push(await serveResource(config.victim.url, inputs.victimBytes));
-      if (inputs.kind === "attacker-page") {
-        servers.push(await serveResource(inputs.attacker.url, inputs.attackerBytes));
+      if (inputs.attackerBytes !== undefined) {
+        servers.push(await serveResource(config.attacker.url, inputs.attackerBytes));
       }
     }
 
@@ -465,7 +470,17 @@ async function loadReplayInputs(config: VerifierConfig): Promise<ReplayInputs> {
   ]);
   const trustedServer = serverBytes === undefined ? {} : { serverBytes };
   if (sameDocumentBase(submission, config.victim.url)) {
-    return { kind: "navigation", victimBytes, submission, ...trustedServer };
+    const attackerBytes = await readOptionalAttackerPage(
+      config.attacker.path,
+      config.limits.attackerBytes,
+    );
+    return {
+      kind: "navigation",
+      victimBytes,
+      ...(attackerBytes === undefined ? {} : { attackerBytes }),
+      submission,
+      ...trustedServer,
+    };
   }
 
   const attackerBytes = await readAttackerPage(config.attacker.path, config.limits.attackerBytes);
@@ -474,7 +489,6 @@ async function loadReplayInputs(config: VerifierConfig): Promise<ReplayInputs> {
     victimBytes,
     attackerBytes,
     submission,
-    attacker: config.attacker,
     ...trustedServer,
   };
 }

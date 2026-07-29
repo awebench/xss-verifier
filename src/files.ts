@@ -120,12 +120,25 @@ async function readTrustedArtifact(
 }
 
 export async function readAttackerPage(path: string, maxBytes: number): Promise<Buffer> {
-  const bytes = await readArtifactForProof(
-    path,
-    maxBytes,
-    "attacker_missing",
-    "the attacker page is missing",
-  );
+  const bytes = await readOptionalAttackerPage(path, maxBytes);
+  if (bytes === undefined) {
+    throw new ProofError("attacker_missing", "the attacker page is missing");
+  }
+  return bytes;
+}
+
+export async function readOptionalAttackerPage(
+  path: string,
+  maxBytes: number,
+): Promise<Buffer | undefined> {
+  let bytes: Buffer;
+  try {
+    bytes = await readRegularFile(path, maxBytes);
+  } catch (error) {
+    if (!(error instanceof ArtifactIssue)) throw error;
+    if (error.kind === "missing") return undefined;
+    throwArtifactProofError(error, "attacker_missing", "the attacker page is missing");
+  }
   decodeUtf8(bytes, "attacker_invalid_utf8", "the attacker page is not valid UTF-8");
   return bytes;
 }
@@ -205,15 +218,23 @@ async function readArtifactForProof(
     return await readRegularFile(path, maxBytes);
   } catch (error) {
     if (!(error instanceof ArtifactIssue)) throw error;
-    switch (error.kind) {
-      case "missing":
-        throw new ProofError(missingCode, missingMessage);
-      case "too-large":
-        throw new ProofError("artifact_too_large", error.message);
-      case "unsafe":
-      case "changed":
-        throw new ProofError("unsafe_artifact", error.message);
-    }
+    throwArtifactProofError(error, missingCode, missingMessage);
+  }
+}
+
+function throwArtifactProofError(
+  error: ArtifactIssue,
+  missingCode: ProofFailureCode,
+  missingMessage: string,
+): never {
+  switch (error.kind) {
+    case "missing":
+      throw new ProofError(missingCode, missingMessage);
+    case "too-large":
+      throw new ProofError("artifact_too_large", error.message);
+    case "unsafe":
+    case "changed":
+      throw new ProofError("unsafe_artifact", error.message);
   }
 }
 
