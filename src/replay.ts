@@ -91,6 +91,7 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
       browser = await puppeteer.launch({
         executablePath: config.browser.executablePath,
         headless: true,
+        ignoreDefaultArgs: ["--disable-popup-blocking"],
         userDataDir: profile,
         protocolTimeout: Math.max(30_000, config.timeoutMs + 10_000),
         args: [

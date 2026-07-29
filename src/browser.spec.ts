@@ -200,6 +200,36 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
     });
   }, 30_000);
 
+  it("blocks an attacker popup without user activation", async () => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const attackerPath = join(directory, "attacker.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
+    const victim = Buffer.from("<!doctype html><script>alert('proof')</script>");
+    const attacker = Buffer.from(
+      `<!doctype html><script>open(${JSON.stringify(victimUrl.href)}, "victimMain")</script>`,
+    );
+    await Promise.all([
+      writeFile(victimPath, victim),
+      writeFile(attackerPath, attacker),
+      writeFile(submissionPath, `${attackerUrl.href}\n`),
+    ]);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: attackerPath,
+        url: attackerUrl,
+      }),
+      timeoutMs: 500,
+    });
+
+    expect(result).toMatchObject({ passed: false, reasonCode: "dialog_timeout" });
+    expect(result.evidence.finalUrls).not.toContain(victimUrl.href);
+  });
+
   it("can click the same button repeatedly", async () => {
     const victimPort = await freePort();
     const victimPath = join(directory, "victim.html");
