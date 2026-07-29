@@ -20,6 +20,12 @@ elements in document order across pages and frames. It does not require,
 forbid, or cap a solution's clicks; the configured replay timeout is the
 execution bound.
 
+Tasks with timing-sensitive browser behavior may opt into zero to seven
+`dialog_timeout` retries with `--dialog-timeout-retries` or
+`XSS_VERIFIER_DIALOG_TIMEOUT_RETRIES`. Each retry starts fresh replay servers,
+a fresh Chrome process, and a fresh browser profile. Other proof failures and
+technical errors are not retried.
+
 Tasks that need stateful or dynamic HTTP behavior may additionally configure a
 trusted `server.mjs` and its SHA-256. The verifier reads the module without
 following symlinks, verifies its hash, and executes an exact private snapshot.

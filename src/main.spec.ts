@@ -79,6 +79,7 @@ describe("CLI application", () => {
           XSS_VERIFIER_DIALOG_MESSAGE: "proof",
           XSS_VERIFIER_FRAME_SCOPE: "top",
           XSS_VERIFIER_TIMEOUT_MS: "5000",
+          XSS_VERIFIER_DIALOG_TIMEOUT_RETRIES: "2",
           XSS_VERIFIER_BROWSER_PATH: "/unused/chrome",
           XSS_VERIFIER_EXPECTED_BROWSER_VERSION: "1",
         },
@@ -92,6 +93,7 @@ describe("CLI application", () => {
     expect(JSON.parse(stdout.join(""))).toMatchObject({
       passed: false,
       reasonCode: "victim_modified",
+      evidence: { replayAttempts: { configured: 3, completed: 0 } },
     });
     expect(stderr).toEqual([]);
   });

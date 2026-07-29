@@ -31,6 +31,7 @@ describe("configuration", () => {
         expectation: { dialogType: "alert", message: "proof", frameScope: "top" },
         browser: { sandbox: "enabled" },
         timeoutMs: 5000,
+        dialogTimeoutRetries: 0,
       },
     });
     expect(invocation.config.victim.url.href).toBe("http://127.0.0.1:4174/victim.html");
@@ -86,6 +87,11 @@ describe("configuration", () => {
     ["file victim", { XSS_VERIFIER_VICTIM_URL: "file:///work/victim.html" }, /loopback http/u],
     ["remote victim", { XSS_VERIFIER_VICTIM_URL: "https://example.com/victim" }, /loopback http/u],
     ["bad timeout", { XSS_VERIFIER_TIMEOUT_MS: "0" }, /between 100 and 30000/u],
+    [
+      "too many dialog timeout retries",
+      { XSS_VERIFIER_DIALOG_TIMEOUT_RETRIES: "8" },
+      /between 0 and 7/u,
+    ],
     ["bad frame scope", { XSS_VERIFIER_FRAME_SCOPE: "parent" }, /Invalid option/u],
     [
       "missing attacker path",
@@ -99,12 +105,21 @@ describe("configuration", () => {
 
   it("lets CLI flags override matching environment variables", () => {
     const invocation = parseRun(
-      ["--dialog-message", "cli-proof", "--frame-scope=any", "--browser-sandbox", "disabled"],
-      baseEnvironment,
+      [
+        "--dialog-message",
+        "cli-proof",
+        "--frame-scope=any",
+        "--browser-sandbox",
+        "disabled",
+        "--dialog-timeout-retries",
+        "3",
+      ],
+      { ...baseEnvironment, XSS_VERIFIER_DIALOG_TIMEOUT_RETRIES: "1" },
     );
     expect(invocation.config).toMatchObject({
       expectation: { message: "cli-proof", frameScope: "any" },
       browser: { sandbox: "disabled" },
+      dialogTimeoutRetries: 3,
     });
   });
 

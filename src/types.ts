@@ -65,6 +65,7 @@ export interface VerifierConfig {
     sandbox: "enabled" | "disabled";
   };
   timeoutMs: number;
+  dialogTimeoutRetries: number;
   limits: EvidenceLimits;
 }
 
@@ -85,6 +86,10 @@ export interface DialogEvidence {
 
 export interface VerificationEvidence {
   replayKind: ReplayKind | null;
+  replayAttempts?: {
+    configured: number;
+    completed: number;
+  };
   interaction: InteractionEvidence;
   submittedUrl: string;
   browserVersion: string;

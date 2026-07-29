@@ -146,6 +146,13 @@ const optionDefinitions = {
     required: true,
     schema: integerString(100, 30_000),
   }),
+  dialogTimeoutRetries: defineOption({
+    cli: "dialog-timeout-retries",
+    environment: "XSS_VERIFIER_DIALOG_TIMEOUT_RETRIES",
+    valueName: "COUNT",
+    description: "Fresh replay retries after dialog timeout (default: 0)",
+    schema: integerString(0, 7).default(0),
+  }),
   browserPath: defineOption({
     cli: "browser-path",
     environment: "XSS_VERIFIER_BROWSER_PATH",
@@ -356,6 +363,7 @@ export function parseVerifierConfig(
       sandbox: parseOption("browserSandbox", parsed, environment),
     },
     timeoutMs: parseOption("timeoutMs", parsed, environment),
+    dialogTimeoutRetries: parseOption("dialogTimeoutRetries", parsed, environment),
     limits: {
       submissionBytes: parseOption("submissionBytes", parsed, environment),
       attackerBytes: parseOption("attackerBytes", parsed, environment),

@@ -17,6 +17,7 @@ const config: VerifierConfig = {
   expectation: { dialogType: "alert", message: "proof", frameScope: "top" },
   browser: { executablePath: "/browser", expectedVersion: "1", sandbox: "enabled" },
   timeoutMs: 1000,
+  dialogTimeoutRetries: 0,
   limits: {
     submissionBytes: 4096,
     attackerBytes: 4096,

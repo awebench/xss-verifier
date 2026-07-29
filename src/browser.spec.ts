@@ -224,11 +224,87 @@ describe.skipIf(!integrationEnabled).sequential("pinned browser replay", () => {
         url: attackerUrl,
       }),
       timeoutMs: 500,
+      dialogTimeoutRetries: 2,
     });
 
     expect(result).toMatchObject({ passed: false, reasonCode: "dialog_timeout" });
+    expect(result.evidence.replayAttempts).toEqual({ configured: 3, completed: 3 });
     expect(result.evidence.finalUrls).not.toContain(victimUrl.href);
-  });
+  }, 30_000);
+
+  it("uses a fresh browser profile for every timeout retry", async () => {
+    const victimPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const submissionPath = join(directory, "finding.txt");
+    const victim = Buffer.from(`<!doctype html><script>
+      const seen = localStorage.getItem("seen");
+      localStorage.setItem("seen", "1");
+      if (seen === "1") alert("proof");
+    </script>`);
+    await writeFile(victimPath, victim);
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    await writeFile(submissionPath, `${victimUrl.href}\n`);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath),
+      timeoutMs: 300,
+      dialogTimeoutRetries: 1,
+    });
+
+    expect(result).toMatchObject({ passed: false, reasonCode: "dialog_timeout" });
+    expect(result.evidence.replayAttempts).toEqual({ configured: 2, completed: 2 });
+  }, 30_000);
+
+  it("restarts a trusted task server for every timeout retry", async () => {
+    const victimPort = await freePort();
+    const attackerPort = await freePort();
+    const victimPath = join(directory, "victim.html");
+    const serverPath = join(directory, "server.mjs");
+    const submissionPath = join(directory, "finding.txt");
+    const victimUrl = new URL(`http://127.0.0.1:${victimPort}/victim.html`);
+    const attackerUrl = new URL(`http://127.0.0.1:${attackerPort}/attacker.html`);
+    const victim = Buffer.from("<!doctype html><p>Dynamic victim</p>");
+    const server = Buffer.from(`
+      import { createServer } from "node:http";
+      const victim = new URL(process.env.XSS_TASK_VICTIM_URL);
+      const attacker = new URL(process.env.XSS_TASK_ATTACKER_URL);
+      let browserLoads = 0;
+      createServer((request, response) => {
+        const url = new URL(request.url ?? "/", victim);
+        if (url.pathname !== victim.pathname) {
+          response.writeHead(404).end();
+          return;
+        }
+        if (String(request.headers["user-agent"] ?? "").includes("Chrome/")) {
+          browserLoads += 1;
+        }
+        response.writeHead(200, { "Content-Type": "text/html" });
+        response.end(
+          "<!doctype html><script>if (" + browserLoads + " > 1) alert('proof')</script>",
+        );
+      }).listen(Number(victim.port), victim.hostname);
+      createServer((_request, response) => response.writeHead(404).end())
+        .listen(Number(attacker.port), attacker.hostname);
+    `);
+    await Promise.all([
+      writeFile(victimPath, victim),
+      writeFile(serverPath, server),
+      writeFile(submissionPath, `${victimUrl.href}\n`),
+    ]);
+
+    const result = await verify({
+      ...verifierConfig(victimPath, victimUrl, victim, submissionPath, {
+        path: join(directory, "attacker.html"),
+        url: attackerUrl,
+      }),
+      server: { path: serverPath, sha256: sha256(server) },
+      timeoutMs: 300,
+      dialogTimeoutRetries: 1,
+    });
+
+    expect(result).toMatchObject({ passed: false, reasonCode: "dialog_timeout" });
+    expect(result.evidence.replayAttempts).toEqual({ configured: 2, completed: 2 });
+  }, 30_000);
 
   it("can click the same button repeatedly", async () => {
     const victimPort = await freePort();
@@ -438,6 +514,7 @@ function verifierConfig(
       sandbox: browserSandbox,
     },
     timeoutMs: 3000,
+    dialogTimeoutRetries: 0,
     limits: {
       submissionBytes: 16 * 1024,
       attackerBytes: 256 * 1024,

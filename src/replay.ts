@@ -48,8 +48,51 @@ const replayPollMs = 50;
 const replayPassDelayMs = 250;
 
 export async function verify(config: VerifierConfig): Promise<VerificationResult> {
-  let replayKind: ReplayInputs["kind"] | null = null;
-  let submittedUrl = "";
+  const configuredAttempts = config.dialogTimeoutRetries + 1;
+  let inputs: ReplayInputs;
+  try {
+    inputs = await loadReplayInputs(config);
+  } catch (error) {
+    if (error instanceof ProofError) {
+      const result = verificationFailure(error.reasonCode, error.message, emptyEvidence(null));
+      return withReplayAttempts(result, configuredAttempts, 0);
+    }
+    throw error;
+  }
+
+  const { result, completed } = await retryDialogTimeout(configuredAttempts, async () =>
+    runReplayAttempt(config, inputs),
+  );
+  return withReplayAttempts(result, configuredAttempts, completed);
+}
+
+export async function retryDialogTimeout(
+  configuredAttempts: number,
+  runAttempt: () => Promise<VerificationResult>,
+): Promise<{ result: VerificationResult; completed: number }> {
+  if (!Number.isSafeInteger(configuredAttempts) || configuredAttempts < 1) {
+    throw new TechnicalError("configured replay attempts must be a positive integer");
+  }
+
+  for (let completed = 1; completed <= configuredAttempts; completed += 1) {
+    const result = await runAttempt();
+    if (
+      result.passed ||
+      result.reasonCode !== "dialog_timeout" ||
+      completed === configuredAttempts
+    ) {
+      return { result, completed };
+    }
+  }
+  throw new TechnicalError("replay attempt loop completed without a result");
+}
+
+async function runReplayAttempt(
+  config: VerifierConfig,
+  inputs: ReplayInputs,
+): Promise<VerificationResult> {
+  const replayKind = inputs.kind;
+  const submittedUrl = inputs.submission.href;
   let browserVersion = "";
   let browser: Browser | undefined;
   let observer: DialogObserver | undefined;
@@ -58,18 +101,6 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
   const servers: RunningServer[] = [];
 
   try {
-    let inputs: ReplayInputs;
-    try {
-      inputs = await loadReplayInputs(config);
-    } catch (error) {
-      if (error instanceof ProofError) {
-        return verificationFailure(error.reasonCode, error.message, emptyEvidence(replayKind));
-      }
-      throw error;
-    }
-    replayKind = inputs.kind;
-    submittedUrl = inputs.submission.href;
-
     if (inputs.serverBytes !== undefined) {
       taskServer = await startTaskServer({
         serverBytes: inputs.serverBytes,
@@ -181,6 +212,21 @@ export async function verify(config: VerifierConfig): Promise<VerificationResult
     if (browser) await closeBrowser(browser);
     await cleanUpReplayResources(servers, taskServer, profile);
   }
+}
+
+function withReplayAttempts(
+  result: VerificationResult,
+  configured: number,
+  completed: number,
+): VerificationResult {
+  if (configured === 1) return result;
+  return {
+    ...result,
+    evidence: {
+      ...result.evidence,
+      replayAttempts: { configured, completed },
+    },
+  };
 }
 
 export async function closeBrowser(browser: Browser, timeoutMs = 5_000): Promise<void> {
