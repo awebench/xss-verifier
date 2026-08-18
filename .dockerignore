@@ -1,0 +1,13 @@
+.git
+.github
+dist
+node_modules
+coverage
+*.log
+.DS_Store
+.tmp-*
+.agents
+skills-lock.json
+.env
+.env.*
+.npmrc

@@ -1,0 +1,22 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+*.log
+
+# Operating system and editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+.npmrc
+
+# Local benchmark and agent state
+.tmp-*/
+skills-lock.json
+.agents/
