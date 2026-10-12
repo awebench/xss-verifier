@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "ctrf": "0.3.0",
-    "puppeteer-core": "25.3.0",
+    "puppeteer-core": "25.13.0",
     "zod": "4.4.3"
   },
   "devDependencies": {
